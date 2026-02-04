@@ -527,27 +527,11 @@ cargo fmt
 
 ---
 
-## 📄 License
-
-Apache License 2.0 - see [LICENSE](LICENSE) file for details.
-
----
-
-## ⚖️ Disclaimer
-
-This software is provided "as-is" for educational purposes only. Trading cryptocurrencies and prediction markets involves substantial risk of loss. Use at your own risk. The authors are not responsible for any financial losses.
-
----
-
-## 🤝 Contributing
-
-Contributions welcome! Please feel free to submit a Pull Request.
-
----
-
 ## 📞 Support
 
-For issues or questions, please open a GitHub issue.
+If you have any questions or would like a more customized app for specific use cases, please feel free to contact us at the contact information below.
+- E-Mail: admin@hyperbuildx.com
+- Telegram: [@bettyjk_0915](https://t.me/bettyjk_0915)
 
 ---
 
