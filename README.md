@@ -9,6 +9,10 @@
 
 This bot automatically trades on Polymarket's 15-minute prediction markets for BTC, ETH, Solana, and XRP. It uses a **momentum-based strategy** that buys tokens when price reaches a trigger threshold after a minimum time has elapsed, then sells at a target price or redeems at market closure.
 
+🎥 Watch the bot in action:
+[![Polymarket Trading Bot Demo](https://img.youtube.com/vi/1nF556ypGXM/0.jpg)](https://youtu.be/1nF556ypGXM?si=3d4zmY6lKVj4fVhO)
+
+
 ### Core Strategy
 
 **Buy Signal**: When token price reaches `trigger_price` (e.g., $0.87) **after** `min_elapsed_minutes` (e.g., 8 minutes) have passed in the 15-minute period.
