@@ -142,17 +142,11 @@ async fn main() -> Result<()> {
     eprintln!("🔐 Authenticating with Polymarket CLOB API...");
     eprintln!("═══════════════════════════════════════════════════════════");
 
-    match api.authenticate().await {
-        Ok(_) => {
-            eprintln!("✅ Authentication successful!");
-            eprintln!("═══════════════════════════════════════════════════════════");
-        }
-        Err(e) => {
-            warn!("⚠️  Failed to authenticate: {}", e);
-            warn!("⚠️  The bot will continue, but order placement may fail");
-            eprintln!("");
-        }
-    }
+    api.authenticate().await.context(
+        "Authentication failed. Set private_key (and api_key, api_secret, api_passphrase if using API credentials) in config.json."
+    )?;
+    eprintln!("✅ Authentication successful!");
+    eprintln!("═══════════════════════════════════════════════════════════");
 
     eprintln!("🔍 Discovering BTC, ETH, Solana, and XRP markets...");
     let (eth_market_data, btc_market_data, solana_market_data, xrp_market_data) =
