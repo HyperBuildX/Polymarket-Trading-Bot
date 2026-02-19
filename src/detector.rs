@@ -27,6 +27,7 @@ pub struct PriceDetector {
     min_time_remaining_seconds: u64, // Minimum seconds that must remain (e.g., 30 seconds) - don't buy if less time remains
     enable_eth_trading: bool, // Whether ETH trading is enabled
     enable_solana_trading: bool, // Whether Solana trading is enabled
+    enable_xrp_trading: bool, // Whether XRP trading is enabled
     // Track which tokens we've bought in this period (key: token_id)
     current_period_bought: Arc<Mutex<std::collections::HashSet<String>>>,
     // Track last logged period to detect new markets
@@ -90,7 +91,7 @@ impl TokenType {
 }
 
 impl PriceDetector {
-    pub fn new(trigger_price: f64, max_buy_price: f64, min_elapsed_minutes: u64, min_time_remaining_seconds: u64, enable_eth_trading: bool, enable_solana_trading: bool) -> Self {
+    pub fn new(trigger_price: f64, max_buy_price: f64, min_elapsed_minutes: u64, min_time_remaining_seconds: u64, enable_eth_trading: bool, enable_solana_trading: bool, enable_xrp_trading: bool) -> Self {
         Self {
             trigger_price,
             max_buy_price,
@@ -98,6 +99,7 @@ impl PriceDetector {
             min_time_remaining_seconds,
             enable_eth_trading,
             enable_solana_trading,
+            enable_xrp_trading,
             current_period_bought: Arc::new(Mutex::new(std::collections::HashSet::new())),
             last_logged_period: Arc::new(tokio::sync::Mutex::new(None)),
             reset_states: Arc::new(Mutex::new(std::collections::HashMap::new())),
@@ -319,6 +321,19 @@ impl PriceDetector {
                 }
             }
         }
+        // Check XRP Up/Down (only if XRP trading is enabled)
+        if self.enable_xrp_trading {
+            if let Some(xrp_up) = snapshot.xrp_market.up_token.as_ref() {
+                if let Some(opp) = self.check_token(xrp_up, TokenType::XrpUp, &snapshot.xrp_market.condition_id, snapshot, time_elapsed_seconds, min_elapsed_seconds).await {
+                    opportunities.push(opp);
+                }
+            }
+            if let Some(xrp_down) = snapshot.xrp_market.down_token.as_ref() {
+                if let Some(opp) = self.check_token(xrp_down, TokenType::XrpDown, &snapshot.xrp_market.condition_id, snapshot, time_elapsed_seconds, min_elapsed_seconds).await {
+                    opportunities.push(opp);
+                }
+            }
+        }
 
         opportunities
     }
@@ -477,6 +492,42 @@ impl PriceDetector {
                     time_remaining_seconds: snapshot.time_remaining_seconds,
                     time_elapsed_seconds,
                     use_market_order: true, // Always use market order
+                });
+            }
+        }
+
+        // XRP Up/Down (if enabled)
+        if self.enable_xrp_trading {
+            if let Some(xrp_up) = snapshot.xrp_market.up_token.as_ref() {
+                let ask_f64 = xrp_up.ask
+                    .and_then(|a| f64::try_from(a).ok())
+                    .unwrap_or(0.0);
+                eprintln!("   XRP Up: ask=${:.6} -> MARKET order at ${:.6}", ask_f64, ask_f64);
+                opportunities.push(BuyOpportunity {
+                    condition_id: snapshot.xrp_market.condition_id.clone(),
+                    token_id: xrp_up.token_id.clone(),
+                    token_type: TokenType::XrpUp,
+                    bid_price: ask_f64,
+                    period_timestamp: snapshot.period_timestamp,
+                    time_remaining_seconds: snapshot.time_remaining_seconds,
+                    time_elapsed_seconds,
+                    use_market_order: true,
+                });
+            }
+            if let Some(xrp_down) = snapshot.xrp_market.down_token.as_ref() {
+                let ask_f64 = xrp_down.ask
+                    .and_then(|a| f64::try_from(a).ok())
+                    .unwrap_or(0.0);
+                eprintln!("   XRP Down: ask=${:.6} -> MARKET order at ${:.6}", ask_f64, ask_f64);
+                opportunities.push(BuyOpportunity {
+                    condition_id: snapshot.xrp_market.condition_id.clone(),
+                    token_id: xrp_down.token_id.clone(),
+                    token_type: TokenType::XrpDown,
+                    bid_price: ask_f64,
+                    period_timestamp: snapshot.period_timestamp,
+                    time_remaining_seconds: snapshot.time_remaining_seconds,
+                    time_elapsed_seconds,
+                    use_market_order: true,
                 });
             }
         }

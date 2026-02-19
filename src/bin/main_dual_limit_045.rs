@@ -138,25 +138,20 @@ async fn main() -> Result<()> {
         config.polymarket.signature_type,
     ));
 
-    if !is_simulation {
-        eprintln!("\n═══════════════════════════════════════════════════════════");
-        eprintln!("🔐 Authenticating with Polymarket CLOB API...");
-        eprintln!("═══════════════════════════════════════════════════════════");
+    eprintln!("\n═══════════════════════════════════════════════════════════");
+    eprintln!("🔐 Authenticating with Polymarket CLOB API...");
+    eprintln!("═══════════════════════════════════════════════════════════");
 
-        match api.authenticate().await {
-            Ok(_) => {
-                eprintln!("✅ Authentication successful!");
-                eprintln!("═══════════════════════════════════════════════════════════");
-            }
-            Err(e) => {
-                warn!("⚠️  Failed to authenticate: {}", e);
-                warn!("⚠️  The bot will continue, but order placement may fail");
-                eprintln!("");
-            }
+    match api.authenticate().await {
+        Ok(_) => {
+            eprintln!("✅ Authentication successful!");
+            eprintln!("═══════════════════════════════════════════════════════════");
         }
-    } else {
-        eprintln!("💡 Simulation mode: Skipping authentication");
-        eprintln!("");
+        Err(e) => {
+            warn!("⚠️  Failed to authenticate: {}", e);
+            warn!("⚠️  The bot will continue, but order placement may fail");
+            eprintln!("");
+        }
     }
 
     eprintln!("🔍 Discovering BTC, ETH, Solana, and XRP markets...");

@@ -5,7 +5,7 @@ use polymarket_arbitrage_bot::{PolymarketApi, Config};
 use std::str::FromStr;
 use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer as _;
-use polymarket_client_sdk::POLYGON;
+use polymarkets_rs_clob_client::POLYGON;
 
 #[derive(Parser, Debug)]
 #[command(name = "test_allowance")]

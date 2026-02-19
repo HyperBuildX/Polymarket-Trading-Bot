@@ -1,118 +1,85 @@
 # Polymarket Trading Bot
 
-> Automated momentum-based trading bot for Polymarket 15-minute BTC/ETH/Solana/XRP Up/Down markets
+> Automated dual limit-order bot for Polymarket 15-minute BTC/ETH/Solana/XRP Up/Down markets.
 
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-## 🎯 Overview
+---
 
-This bot automatically trades on Polymarket's 15-minute prediction markets for BTC, ETH, Solana, and XRP. It uses a **momentum-based strategy** that buys tokens when price reaches a trigger threshold after a minimum time has elapsed, then sells at a target price or redeems at market closure.
+## Overview
 
-🎥 Watch the bot in action:
+This bot trades on Polymarket’s 15-minute prediction markets for **BTC**, **ETH**, **Solana**, and **XRP**. The main strategy is a **dual limit-start** approach: at the start of each 15-minute period, it places limit buy orders for both Up and Down tokens at a fixed price (default **$0.45**). Filled positions are then managed with target sells, stop-loss, and redemption at market closure.
+
+### Strategy Summary
+
+| Phase | Behavior |
+|-------|----------|
+| **Market start** | Place limit buy orders for Up and Down tokens at `dual_limit_price` (e.g. $0.45). |
+| **Position management** | Sell at target price, stop-loss if price drops, or redeem when the market closes. |
+| **Markets** | BTC always; ETH, Solana, and XRP can be enabled or disabled in config. |
+
+**Watch the bot in action:**
 
 [![Polymarket Trading Bot Demo](https://img.youtube.com/vi/1nF556ypGXM/0.jpg)](https://youtu.be/1nF556ypGXM?si=3d4zmY6lKVj4fVhO)
 
-
-### Core Strategy
-
-**Buy Signal**: When token price reaches `trigger_price` (e.g., $0.87) **after** `min_elapsed_minutes` (e.g., 8 minutes) have passed in the 15-minute period.
-
-**Sell Signal**: 
-- Sell at `sell_price` (e.g., $0.98) when price reaches target
-- Stop-loss at `stop_loss_price` (e.g., $0.80) if price drops
-- Redeem at market closure if token wins (worth $1.00) or loses (worth $0.00)
-
-**Rationale**: If a token reaches $0.87+ after 8+ minutes, there's strong momentum suggesting it will likely reach $0.98+ or $1.00 by market close.
-
 ---
 
-## 🏗️ Architecture
-
-### Core Components
+## Architecture
 
 ```
 ┌─────────────────┐
-│  MarketMonitor  │  ← Polls markets, generates snapshots
+│  MarketMonitor  │  Polls markets, builds snapshots
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│ PriceDetector   │  ← Detects buy opportunities
+│  Limit orders   │  At period start: place Up/Down limit buys at fixed price
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│     Trader      │  ← Executes trades, manages positions
+│     Trader      │  Executes orders, manages positions, redemptions
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  PolymarketApi  │  ← Handles all API interactions
+│  PolymarketApi  │  CLOB/Gamma API, auth, signing
 └─────────────────┘
 ```
 
-### Trading Flow
-
-```
-1. MarketMonitor polls markets every check_interval_ms (default: 1 second)
-   ↓
-2. PriceDetector analyzes prices:
-   - Checks if min_elapsed_minutes have passed
-   - Checks if price >= trigger_price
-   - Checks if price <= max_buy_price
-   - Checks if time_remaining >= min_time_remaining_seconds
-   ↓
-3. If all conditions met → BuyOpportunity detected
-   ↓
-4. Trader executes buy order:
-   - Places market order (FOK - Fill or Kill)
-   - Verifies balance (polls until tokens arrive)
-   - Tracks position in pending_trades
-   ↓
-5. Background task monitors position:
-   - Checks if price reached sell_price → Sell
-   - Checks if price dropped to stop_loss_price → Sell
-   - Checks if market closed → Redeem tokens
-   ↓
-6. Profit/loss recorded and logged
-```
-
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
-- **Rust 1.70+** - [Install Rust](https://www.rust-lang.org/tools/install)
-- **Polymarket Account** - With API credentials
-- **Polygon Wallet** - With USDC balance for trading
-- **POL/MATIC** - For gas fees (recommended: 0.5+ POL)
+- **Rust 1.70+** — [Install Rust](https://www.rust-lang.org/tools/install)
+- **Polymarket account** — API key, secret, passphrase
+- **Polygon wallet** — USDC for trading, POL for gas (e.g. 0.5+ POL)
 
-### Installation
+### Build and run
 
 ```bash
-# Clone the repository
 git clone <repository-url>
-cd polymarket-copy-trading-bot
+cd Polymarket-Trading-Bot-Rust
 
-# Build the project
 cargo build --release
 
-# Run in simulation mode (default - safe for testing)
+# Simulation (no real orders)
 cargo run --release
 
-# Run in production mode (real trades)
+# Production (real trades)
 cargo run --release -- --no-simulation
 ```
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-### 1. Create `config.json`
+Create or edit `config.json` in the project directory.
 
-The bot will create a default `config.json` if it doesn't exist. Edit it with your settings:
+### Example `config.json`
 
 ```json
 {
@@ -133,6 +100,8 @@ The bot will create a default `config.json` if it doesn't exist. Edit it with yo
     "xrp_condition_id": null,
     "check_interval_ms": 1000,
     "fixed_trade_amount": 4.5,
+    "dual_limit_price": 0.45,
+    "dual_limit_shares": null,
     "min_elapsed_minutes": 8,
     "min_time_remaining_seconds": 30,
     "market_closure_check_interval_seconds": 10,
@@ -140,7 +109,6 @@ The bot will create a default `config.json` if it doesn't exist. Edit it with yo
     "max_buy_price": 0.95,
     "trigger_price": 0.87,
     "stop_loss_price": 0.80,
-    "hedge_price": 0.5,
     "enable_eth_trading": true,
     "enable_solana_trading": true,
     "enable_xrp_trading": true
@@ -148,38 +116,34 @@ The bot will create a default `config.json` if it doesn't exist. Edit it with yo
 }
 ```
 
-### 2. Configuration Parameters
-
-#### Polymarket API Settings
+### API settings
 
 | Parameter | Description | Required |
 |-----------|-------------|----------|
-| `api_key` | Polymarket API key | Yes (for production) |
-| `api_secret` | Polymarket API secret | Yes (for production) |
-| `api_passphrase` | Polymarket API passphrase | Yes (for production) |
-| `private_key` | Wallet private key (hex, with or without 0x) | Yes (for production) |
+| `api_key` | Polymarket API key | Yes (production) |
+| `api_secret` | Polymarket API secret | Yes (production) |
+| `api_passphrase` | Polymarket API passphrase | Yes (production) |
+| `private_key` | Wallet private key (hex, with or without `0x`) | Yes (production) |
 | `proxy_wallet_address` | Polymarket proxy wallet address | Optional |
-| `signature_type` | 0=EOA, 1=Proxy, 2=GnosisSafe | Optional (default: 0) |
+| `signature_type` | `0` = EOA, `1` = Proxy, `2` = GnosisSafe | Optional (default: 0) |
 
-#### Trading Strategy Settings
+### Trading settings
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `fixed_trade_amount` | USD amount per trade | 4.5 |
-| `trigger_price` | Minimum price to trigger buy (e.g., 0.87 = $0.87) | 0.87 |
-| `max_buy_price` | Maximum price to buy at (e.g., 0.95 = $0.95) | 0.95 |
-| `min_elapsed_minutes` | Minutes that must pass before buying | 8 |
-| `min_time_remaining_seconds` | Minimum seconds remaining to allow buy | 30 |
-| `sell_price` | Target sell price (e.g., 0.98 = $0.98) | 0.98 |
-| `stop_loss_price` | Stop-loss price (e.g., 0.80 = $0.80) | 0.80 |
-| `check_interval_ms` | Market polling interval (milliseconds) | 1000 |
-| `enable_eth_trading` | Enable ETH market trading | true |
-| `enable_solana_trading` | Enable Solana market trading | false |
-| `enable_xrp_trading` | Enable XRP market trading | false |
+| `dual_limit_price` | Limit buy price for Up/Down at market start | 0.45 |
+| `dual_limit_shares` | Fixed shares per limit order; if unset, uses `fixed_trade_amount / price` | null |
+| `fixed_trade_amount` | USD size when shares not fixed by `dual_limit_shares` | 4.5 |
+| `sell_price` | Target sell price | 0.98 |
+| `stop_loss_price` | Stop-loss sell price | 0.80 |
+| `check_interval_ms` | Market polling interval (ms) | 1000 |
+| `enable_eth_trading` | Enable ETH 15m markets | true |
+| `enable_solana_trading` | Enable Solana 15m markets | false |
+| `enable_xrp_trading` | Enable XRP 15m markets | false |
 
-#### Market Discovery
+### Market discovery
 
-The bot automatically discovers markets for each 15-minute period. You can optionally set `condition_id` values in config to use specific markets:
+The bot discovers 15-minute markets by slug (e.g. `btc-updown-15m-{timestamp}`). You can pin markets by setting condition IDs:
 
 ```json
 {
@@ -192,347 +156,119 @@ The bot automatically discovers markets for each 15-minute period. You can optio
 }
 ```
 
-If not set, the bot will automatically discover markets using slug patterns like:
-- `btc-updown-15m-{timestamp}`
-- `eth-updown-15m-{timestamp}`
-- `solana-updown-15m-{timestamp}` or `sol-updown-15m-{timestamp}`
-- `xrp-updown-15m-{timestamp}`
-
 ---
 
-## 📖 Core Logic Explained
+## Running the bot
 
-### 1. Market Monitoring
-
-The `MarketMonitor` continuously polls Polymarket API every `check_interval_ms` (default: 1 second) to:
-- Fetch current market prices (BID/ASK)
-- Calculate time remaining in the 15-minute period
-- Generate `MarketSnapshot` with all market data
-
-### 2. Opportunity Detection
-
-The `PriceDetector` analyzes each snapshot and checks:
-
-```rust
-// Buy conditions (ALL must be true):
-1. time_elapsed >= min_elapsed_minutes (e.g., 8 minutes)
-2. bid_price >= trigger_price (e.g., $0.87)
-3. bid_price <= max_buy_price (e.g., $0.95)
-4. time_remaining >= min_time_remaining_seconds (e.g., 30 seconds)
-5. No active position of same token type in this period
-6. Reset state is "Ready" (after sell, price must drop below trigger first)
-```
-
-**Example Scenario**:
-- 8 minutes have elapsed in a 15-minute period
-- BTC Up token BID price = $0.88
-- 7 minutes remaining (420 seconds > 30 seconds minimum)
-- ✅ **Buy signal triggered!**
-
-### 3. Trade Execution
-
-When a buy opportunity is detected:
-
-1. **Order Placement**: Places market order (FOK - Fill or Kill)
-   - Order size: `fixed_trade_amount` USD (e.g., $4.50)
-   - Type: Market order (immediate execution)
-   - Side: BUY
-
-2. **Balance Verification**: Polls balance every 2 seconds (max 60 seconds) until tokens arrive
-
-3. **Position Tracking**: Adds trade to `pending_trades` HashMap:
-   ```rust
-   PendingTrade {
-       token_id: "...",
-       purchase_price: 0.88,
-       units: 5.11,  // $4.50 / $0.88
-       sell_price: 0.98,
-       stop_loss_price: 0.80,
-       // ... other fields
-   }
-   ```
-
-### 4. Position Management
-
-Background task (`check_pending_trades()`) runs every 500ms to:
-
-1. **Check Sell Conditions**:
-   - If ASK price >= `sell_price` → Place sell order
-   - If ASK price <= `stop_loss_price` → Place sell order (stop-loss)
-
-2. **Check Market Closure**:
-   - If market closed → Redeem tokens
-   - Winning token (correct outcome) = $1.00 per share
-   - Losing token (wrong outcome) = $0.00 per share
-
-3. **Retry Logic**:
-   - Failed sell orders are retried (up to `sell_attempts` limit)
-   - Failed redemptions are retried every 10 seconds
-
-### 5. Reset Mechanism
-
-After a successful buy-sell cycle:
-- Price must drop **below** `trigger_price` before allowing another buy
-- Prevents buying immediately after selling when price only dips slightly
-- Ensures each buy is a fresh opportunity
-
----
-
-## 🎮 Running the Bot
-
-### Simulation Mode (Default - Safe)
+### Default binary (dual limit bot)
 
 ```bash
-# Run in simulation mode (no real trades)
+# Simulation (default)
 cargo run --release
 
-# Or explicitly:
-cargo run --release -- --simulation
-```
-
-**Simulation Mode**:
-- ✅ Detects opportunities
-- ✅ Logs what trades would be made
-- ✅ Tracks PnL in `simulation.toml`
-- ❌ Does NOT place real orders
-- ❌ Does NOT spend real money
-
-### Production Mode (Real Trades)
-
-```bash
-# Run in production mode (real trades)
+# Production
 cargo run --release -- --no-simulation
 ```
 
-**⚠️ WARNING**: Production mode will:
-- ✅ Place real orders on Polymarket
-- ✅ Spend real USDC from your wallet
-- ✅ Execute real trades
-- ⚠️ **Use at your own risk!**
+Simulation mode logs intended trades and tracks PnL in `simulation.toml` without placing orders. Production mode places real orders and uses real funds; use with care.
 
-### Other Binaries
-
-The project includes several specialized binaries:
+### Other binaries
 
 ```bash
-# Price monitor (logs prices to file)
+# Price monitor (log prices to file)
 cargo run --release --bin price_monitor
 
-# Limit order bot
-cargo run --release --bin polymarket-arbitrage-bot-limit
-
-# Dual limit bot (0.45 price)
-cargo run --release --bin main_dual_limit_045
-
-# Test scripts
+# Test utilities
 cargo run --release --bin test_sell
 cargo run --release --bin test_redeem
 cargo run --release --bin test_allowance
+cargo run --release --bin test_limit_order
+cargo run --release --bin test_merge
+cargo run --release --bin test_predict_fun
 ```
 
 ---
 
-## 📊 Logging
+## Logging
 
-### Console Output
-
-The bot logs to both console and files:
-- **Real-time updates**: Price checks, opportunity detection, trade execution
-- **Structured events**: Buy orders, sell fills, redemptions
-
-### Log Files
-
-- **`history.toml`**: All trading events with timestamps
-  ```
-  [2024-01-15T10:30:00Z] BUY ORDER | Market: BTC Up | Period: 1705316400 | Price: $0.88 | Units: 5.11 | Cost: $4.50 | Status: SUCCESS
-  [2024-01-15T10:35:00Z] SELL ORDER FILLED | Market: BTC Up | Sell Price: $0.98 | Revenue: $5.01 | Profit: $0.51
-  ```
-
-- **`price_monitor.toml`**: Price history (simulation mode only)
-
-- **`simulation.toml`**: PnL tracking (simulation mode only)
+- **Console** — Real-time status, opportunities, and trade events.
+- **`history.toml`** — Append-only log of trading events with timestamps.
+- **`price_monitor.toml`** — Price history when running the price monitor (or simulation with price logging).
+- **`simulation.toml`** — PnL and simulation state when running in simulation mode.
 
 ---
 
-## 🔍 Key Features
+## Features
 
-### ✅ Automatic Market Discovery
-
-- Discovers new 15-minute markets automatically
-- Handles market transitions between periods
-- Supports BTC, ETH, Solana, and XRP markets
-
-### ✅ Risk Management
-
-- **Stop-loss protection**: Automatic sell if price drops too low
-- **Time-based safety**: Won't buy if too little time remaining
-- **Position limits**: One position per token type per period
-- **Reset mechanism**: Prevents over-trading
-
-### ✅ Robust Error Handling
-
-- Retries failed orders
-- Handles network errors gracefully
-- Continues operating even if some markets fail
-- Comprehensive error logging
-
-### ✅ Production Ready
-
-- Authentication with Polymarket API
-- Proper order signing
-- Balance verification
-- Market closure detection
-- Token redemption handling
+- **Automatic market discovery** — Finds 15-minute Up/Down markets for BTC, ETH, Solana, XRP; handles period rollover.
+- **Dual limit at period start** — Places limit buys for both outcomes at a configurable price (e.g. $0.45).
+- **Position management** — Target sell, stop-loss, and redemption at market close.
+- **Configurable markets** — Enable/disable ETH, Solana, XRP; optional fixed condition IDs.
+- **Simulation mode** — Test logic and PnL without sending orders.
+- **Structured logging** — Console and file logging for debugging and audit.
 
 ---
 
-## 🛠️ Development
-
-### Project Structure
+## Project structure
 
 ```
 src/
-├── main.rs          # Entry point, initialization
-├── lib.rs           # Module exports
-├── api.rs           # Polymarket API client
-├── trader.rs       # Trading logic
-├── detector.rs      # Opportunity detection
-├── monitor.rs       # Market monitoring
-├── models.rs        # Data structures
-├── config.rs        # Configuration
-├── simulation.rs    # Simulation tracking
-└── bin/             # Additional binaries
-    ├── main_limit.rs
-    ├── main_dual_limit_045.rs
-    └── test_*.rs
+├── lib.rs              Library and shared modules
+├── api.rs               Polymarket CLOB/Gamma API client
+├── config.rs            Config and CLI args
+├── detector.rs          Opportunity types and helpers
+├── merge.rs             Merge utilities
+├── models.rs            Data structures
+├── monitor.rs           Market monitoring and snapshots
+├── simulation.rs        Simulation PnL and state
+├── trader.rs            Order execution and position management
+└── bin/
+    ├── main_dual_limit_045.rs   Main bot (default binary)
+    ├── main_price_monitor.rs   Price monitor
+    └── test_*.rs               Test utilities
 ```
 
-### Building
+### Commands
 
 ```bash
-# Debug build
-cargo build
-
-# Release build (optimized)
-cargo build --release
-
-# Run tests
-cargo test
-
-# Check for issues
-cargo clippy
-
-# Format code
-cargo fmt
+cargo build --release    # Release build
+cargo check             # Check without full build
+cargo test              # Run tests
+cargo clippy            # Lints
+cargo fmt               # Format code
 ```
 
 ---
 
-## ⚠️ Important Notes
+## Operational notes
 
-### Market Periods
-
-- Markets run in **15-minute periods** (900 seconds)
-- Each period has a unique timestamp (rounded to nearest 15 minutes)
-- New markets are discovered automatically at period boundaries
-
-### Order Types
-
-- **Market Orders (FOK)**: Immediate execution, fill or kill
-- **Limit Orders**: Placed at specific price (used for sell orders)
-
-### Token Redemption
-
-- At market closure, winning tokens are worth **$1.00**
-- Losing tokens are worth **$0.00**
-- The bot automatically redeems tokens after market closure
-- Redemption may take a few minutes to process on-chain
-
-### Gas Fees
-
-- Each transaction requires POL/MATIC for gas
-- Recommended: Keep at least **0.5 POL** in wallet
-- Gas costs vary with network congestion
+- **Periods** — Markets are 15 minutes (900 s); period timestamps are aligned to 900 s boundaries.
+- **Orders** — Limit buys at market start; sells and redemptions use the trader’s normal logic (market/limit as implemented).
+- **Redemption** — After resolution, winning tokens settle at $1.00, losing at $0.00; the bot redeems when the market is closed.
+- **Gas** — Polygon gas (POL) is required; keep sufficient POL (e.g. 0.5+) for transactions.
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
-### Bot not detecting opportunities
-
-- Check `trigger_price` isn't too high
-- Verify `min_elapsed_minutes` isn't too long
-- Ensure markets are active and not closed
-- Check logs for price updates
-
-### Orders failing
-
-- Verify USDC balance is sufficient
-- Check POL balance for gas fees
-- Ensure API credentials are correct
-- Verify wallet has proper allowances
-
-### Authentication errors
-
-- Check `private_key` format (hex string)
-- Verify `api_key`, `api_secret`, `api_passphrase` are correct
-- Ensure `signature_type` matches your wallet type
-- Check `proxy_wallet_address` if using proxy wallet
-
-### Market discovery failing
-
-- Markets may not exist for all periods
-- Check Polymarket website for active markets
-- Set `condition_id` manually in config if needed
-- Bot will use fallback markets if discovery fails
+| Issue | Checks |
+|-------|--------|
+| No orders placed | Confirm markets are active; check `enable_*_trading` and condition IDs; review logs for discovery and timing. |
+| Order failures | Sufficient USDC and POL; valid API credentials and `private_key`; correct `signature_type` and proxy settings if used. |
+| Auth errors | Validate `api_key` / `api_secret` / `api_passphrase`; ensure `private_key` is hex; match `signature_type` to wallet type. |
+| Market not found | Ensure Polymarket lists the 15m market for that asset; try setting the corresponding `*_condition_id` in config. |
 
 ---
 
-## 📝 Example Configuration
+## Security
 
-### Conservative Strategy
-
-```json
-{
-  "trading": {
-    "fixed_trade_amount": 2.0,
-    "trigger_price": 0.90,
-    "max_buy_price": 0.93,
-    "min_elapsed_minutes": 10,
-    "sell_price": 0.99,
-    "stop_loss_price": 0.85
-  }
-}
-```
-
-### Aggressive Strategy
-
-```json
-{
-  "trading": {
-    "fixed_trade_amount": 10.0,
-    "trigger_price": 0.85,
-    "max_buy_price": 0.95,
-    "min_elapsed_minutes": 5,
-    "sell_price": 0.97,
-    "stop_loss_price": 0.75
-  }
-}
-```
+- Do **not** commit `config.json` with real keys or secrets.
+- Prefer simulation and small sizes when testing.
+- Monitor logs and balances when running in production.
 
 ---
 
-## 🔐 Security
-
-- **Never commit `config.json`** with real credentials
-- **Use environment variables** for sensitive data (future feature)
-- **Test in simulation mode** before production
-- **Start with small amounts** to verify everything works
-- **Monitor logs** for unexpected behavior
-
----
-
-## 📞 Support
+## Support
 
 If you have any questions or would like a more customized app for specific use cases, please feel free to contact us at the contact information below.
 - E-Mail: admin@hyperbuildx.com
@@ -540,4 +276,4 @@ If you have any questions or would like a more customized app for specific use c
 
 ---
 
-**Keywords**: Polymarket bot, automated trading, prediction markets, momentum trading, BTC trading, ETH trading, Rust trading bot.
+**Keywords**: Polymarket bot, automated trading, prediction markets, dual limit order, BTC trading, ETH trading, Rust trading bot.

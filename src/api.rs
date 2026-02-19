@@ -12,9 +12,9 @@ use log::{warn, info, error};
 use std::sync::Arc;
 
 // Official SDK imports for proper order signing
-use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
-use polymarket_client_sdk::clob::types::{Side, OrderType, SignatureType, Amount};
-use polymarket_client_sdk::{POLYGON, contract_config};
+use polymarkets_rs_clob_client::clob::{Client as ClobClient, Config as ClobConfig};
+use polymarkets_rs_clob_client::clob::types::{Side, OrderType, SignatureType, Amount};
+use polymarkets_rs_clob_client::{POLYGON, contract_config};
 use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer as _;
 use alloy::primitives::Address as AlloyAddress;
@@ -27,7 +27,7 @@ use alloy::rpc::types::eth::TransactionRequest;
 
 // Contract interfaces for direct RPC calls (like SDK example)
 use alloy::sol;
-use polymarket_client_sdk::types::Address;
+use polymarkets_rs_clob_client::types::Address;
 
 sol! {
     #[sol(rpc)]
@@ -43,6 +43,24 @@ sol! {
 }
 
 type HmacSha256 = Hmac<Sha256>;
+
+/// Parse a token ID string (hex with optional 0x prefix, or decimal) to U256 for SDK 0.4.
+fn parse_token_id_u256(s: &str) -> Result<U256> {
+    let s = s.trim();
+    if s.starts_with("0x") || s.starts_with("0X") {
+        U256::from_str_radix(&s[2..], 16).context("Invalid hex token_id")
+    } else {
+        U256::from_str_radix(s, 10).context("Invalid decimal token_id")
+    }
+}
+
+/// Convert an Ethereum address string to U256 (left-padded 32 bytes) for SDK balance/allowance requests.
+fn address_to_u256(addr: &str) -> Result<U256> {
+    let a = AlloyAddressPrimitive::from_str(addr).context("Invalid address")?;
+    let mut bytes = [0u8; 32];
+    bytes[12..].copy_from_slice(a.as_slice());
+    Ok(U256::from_be_bytes(bytes))
+}
 
 pub struct PolymarketApi {
     client: Client,
@@ -513,9 +531,10 @@ impl PolymarketApi {
         
         // Create and post order using SDK (equivalent to: client.createAndPostOrder(userOrder))
         // This automatically creates, signs, and posts the order
+        let token_id_u256 = parse_token_id_u256(&order.token_id)?;
         let order_builder = client
             .limit_order()
-            .token_id(&order.token_id)
+            .token_id(token_id_u256)
             .size(size)
             .price(price)
             .side(side);
@@ -857,13 +876,14 @@ impl PolymarketApi {
         const USDC_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
         
         // The SDK requires a BalanceAllowanceRequest built with builder pattern
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
         
         // Build the request: BalanceAllowanceRequest::builder().token_id(token_id).asset_type(...).build()
         // For USDC (collateral token), use AssetType::Collateral
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarkets_rs_clob_client::clob::types::AssetType;
+        let usdc_token_id = address_to_u256(USDC_ADDRESS)?;
         let request = BalanceAllowanceRequest::builder()
-            .token_id(USDC_ADDRESS)
+            .token_id(usdc_token_id)
             .asset_type(AssetType::Collateral)
             .build();
         
@@ -945,11 +965,12 @@ impl PolymarketApi {
             .context("Failed to authenticate with CLOB API for balance check")?;
         
         // Get balance using SDK (only balance, not allowance)
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
+        use polymarkets_rs_clob_client::clob::types::AssetType;
         
+        let token_id_u256 = parse_token_id_u256(token_id)?;
         let request = BalanceAllowanceRequest::builder()
-            .token_id(token_id.to_string())
+            .token_id(token_id_u256)
             .asset_type(AssetType::Conditional)
             .build();
         
@@ -1020,13 +1041,14 @@ impl PolymarketApi {
         
         // Get balance and allowance using SDK
         // The SDK requires a BalanceAllowanceRequest built with builder pattern
-        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
+        use polymarkets_rs_clob_client::clob::types::AssetType;
         
         // Build the request: BalanceAllowanceRequest::builder().token_id(token_id).asset_type(...).build()
         // Conditional tokens are AssetType::Conditional
+        let token_id_u256 = parse_token_id_u256(token_id)?;
         let request = BalanceAllowanceRequest::builder()
-            .token_id(token_id.to_string())
+            .token_id(token_id_u256)
             .asset_type(AssetType::Conditional)
             .build();
         
@@ -1144,12 +1166,13 @@ impl PolymarketApi {
             .await
             .context("Failed to authenticate for update_balance_allowance")?;
         
-        use polymarket_client_sdk::clob::types::request::UpdateBalanceAllowanceRequest;
-        use polymarket_client_sdk::clob::types::AssetType;
+        use polymarkets_rs_clob_client::clob::types::request::UpdateBalanceAllowanceRequest;
+        use polymarkets_rs_clob_client::clob::types::AssetType;
         
         // Outcome tokens (conditional tokens) need AssetType::Conditional
+        let token_id_u256 = parse_token_id_u256(token_id)?;
         let request = UpdateBalanceAllowanceRequest::builder()
-            .token_id(token_id.to_string())
+            .token_id(token_id_u256)
             .asset_type(AssetType::Conditional)
             .build();
         
@@ -1221,7 +1244,7 @@ impl PolymarketApi {
     /// Check all approvals for all contracts (like SDK's check_approvals example)
     /// Returns a vector of (contract_name, usdc_approved, ctf_approved) tuples
     pub async fn check_all_approvals(&self) -> Result<Vec<(String, bool, bool)>> {
-        use polymarket_client_sdk::types::address;
+        use polymarkets_rs_clob_client::types::address;
         
         const RPC_URL: &str = "https://polygon-rpc.com";
         const USDC_ADDRESS: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
@@ -1899,12 +1922,13 @@ impl PolymarketApi {
                 .context(format!("Failed to create Amount from shares: {}. Ensure the value is valid and has <= 2 decimal places.", rounded_shares))?
         };
         
+        let token_id_u256 = parse_token_id_u256(token_id)?;
         let order_builder = client
             .market_order()
-            .token_id(token_id)
+            .token_id(token_id_u256)
             .amount(amount)
             .side(side_enum)
-            .order_type(order_type_enum);
+            .order_type(order_type_enum.clone());
         
         // Post order and capture detailed error information
         // For SELL orders, the SDK should handle token approval automatically on the first attempt
@@ -1918,10 +1942,10 @@ impl PolymarketApi {
             // Rebuild order builder for each retry (since it's moved when building)
             let order_builder_retry = client
                 .market_order()
-                .token_id(token_id)
+                .token_id(token_id_u256)
                 .amount(amount.clone())
                 .side(side_enum)
-                .order_type(order_type_enum);
+                .order_type(order_type_enum.clone());
             
             // Build and sign the order (rebuild for each retry since SignedOrder doesn't implement Clone)
             let order_to_sign = order_builder_retry.build().await?;
