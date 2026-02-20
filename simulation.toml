@@ -22,3 +22,7 @@
 [2026-02-19T19:20:34Z] 📊 SIMULATION: Found 0 pending limit order(s) waiting for fills
 
 [2026-02-19T19:20:34Z] ⚠️  SIMULATION: No token IDs to fetch prices for
+[2026-02-20T20:16:23Z] 🔄 SIMULATION: check_pending_trades called
+[2026-02-20T20:16:23Z] 📊 SIMULATION: Found 0 pending limit order(s) waiting for fills
+
+[2026-02-20T20:16:23Z] ⚠️  SIMULATION: No token IDs to fetch prices for

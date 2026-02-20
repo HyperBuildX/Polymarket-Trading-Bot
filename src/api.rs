@@ -12,9 +12,10 @@ use log::{warn, info, error};
 use std::sync::Arc;
 
 // Official SDK imports for proper order signing
-use polymarkets_rs_clob_client::clob::{Client as ClobClient, Config as ClobConfig};
-use polymarkets_rs_clob_client::clob::types::{Side, OrderType, SignatureType, Amount};
-use polymarkets_rs_clob_client::{POLYGON, contract_config};
+use clob_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+use clob_sdk::clob::types::{Amount, AssetType, OrderType, Side, SignatureType};
+use clob_sdk::{contract_config, POLYGON};
+use clob_sdk::types::{address, Address};
 use alloy::signers::local::LocalSigner;
 use alloy::signers::Signer as _;
 use alloy::primitives::Address as AlloyAddress;
@@ -27,7 +28,6 @@ use alloy::rpc::types::eth::TransactionRequest;
 
 // Contract interfaces for direct RPC calls (like SDK example)
 use alloy::sol;
-use polymarkets_rs_clob_client::types::Address;
 
 sol! {
     #[sol(rpc)]
@@ -613,6 +613,38 @@ impl PolymarketApi {
         Ok(None)
     }
 
+    /// Get tokens in portfolio for BTC markets only (no ETH/Solana/XRP). Use for redeem script when other markets are disabled.
+    pub async fn get_portfolio_tokens_btc_only(&self) -> Result<Vec<(String, f64, String, String)>> {
+        let mut tokens_with_balance = Vec::new();
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        println!("🔍 Scanning BTC markets only (current + recent past)...");
+        for offset in 0..=10 {
+            let period_to_check = (current_time / 900) * 900 - (offset * 900);
+            let slug = format!("btc-updown-15m-{}", period_to_check);
+            if let Ok(market) = self.get_market_by_slug(&slug).await {
+                let condition_id = market.condition_id.clone();
+                println!("   📊 Checking BTC market: {} (period: {})", &condition_id[..16.min(condition_id.len())], period_to_check);
+                if let Ok(market_details) = self.get_market(&condition_id).await {
+                    for token in &market_details.tokens {
+                        if let Ok(balance) = self.check_balance_only(&token.token_id).await {
+                            let balance_decimal = balance / rust_decimal::Decimal::from(1_000_000u64);
+                            let balance_f64 = f64::try_from(balance_decimal).unwrap_or(0.0);
+                            if balance_f64 > 0.0 {
+                                let description = format!("BTC {} (period: {})", token.outcome, period_to_check);
+                                tokens_with_balance.push((token.token_id.clone(), balance_f64, description, condition_id.clone()));
+                                println!("      ✅ Found token with balance: {} shares", balance_f64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(tokens_with_balance)
+    }
+
     /// Get all tokens in portfolio with balance > 0
     /// Get all tokens in portfolio with balance > 0, checking recent markets (not just current)
     /// Checks current market and recent past markets (up to 10 periods = 2.5 hours) to find tokens from resolved markets
@@ -876,11 +908,10 @@ impl PolymarketApi {
         const USDC_ADDRESS: &str = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174";
         
         // The SDK requires a BalanceAllowanceRequest built with builder pattern
-        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
+        use clob_sdk::clob::types::request::BalanceAllowanceRequest;
         
         // Build the request: BalanceAllowanceRequest::builder().token_id(token_id).asset_type(...).build()
         // For USDC (collateral token), use AssetType::Collateral
-        use polymarkets_rs_clob_client::clob::types::AssetType;
         let usdc_token_id = address_to_u256(USDC_ADDRESS)?;
         let request = BalanceAllowanceRequest::builder()
             .token_id(usdc_token_id)
@@ -965,8 +996,8 @@ impl PolymarketApi {
             .context("Failed to authenticate with CLOB API for balance check")?;
         
         // Get balance using SDK (only balance, not allowance)
-        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
-        use polymarkets_rs_clob_client::clob::types::AssetType;
+        use clob_sdk::clob::types::request::BalanceAllowanceRequest;
+        use clob_sdk::clob::types::AssetType;
         
         let token_id_u256 = parse_token_id_u256(token_id)?;
         let request = BalanceAllowanceRequest::builder()
@@ -1041,8 +1072,8 @@ impl PolymarketApi {
         
         // Get balance and allowance using SDK
         // The SDK requires a BalanceAllowanceRequest built with builder pattern
-        use polymarkets_rs_clob_client::clob::types::request::BalanceAllowanceRequest;
-        use polymarkets_rs_clob_client::clob::types::AssetType;
+        use clob_sdk::clob::types::request::BalanceAllowanceRequest;
+        use clob_sdk::clob::types::AssetType;
         
         // Build the request: BalanceAllowanceRequest::builder().token_id(token_id).asset_type(...).build()
         // Conditional tokens are AssetType::Conditional
@@ -1166,8 +1197,8 @@ impl PolymarketApi {
             .await
             .context("Failed to authenticate for update_balance_allowance")?;
         
-        use polymarkets_rs_clob_client::clob::types::request::UpdateBalanceAllowanceRequest;
-        use polymarkets_rs_clob_client::clob::types::AssetType;
+        use clob_sdk::clob::types::request::UpdateBalanceAllowanceRequest;
+        use clob_sdk::clob::types::AssetType;
         
         // Outcome tokens (conditional tokens) need AssetType::Conditional
         let token_id_u256 = parse_token_id_u256(token_id)?;
@@ -1244,8 +1275,6 @@ impl PolymarketApi {
     /// Check all approvals for all contracts (like SDK's check_approvals example)
     /// Returns a vector of (contract_name, usdc_approved, ctf_approved) tuples
     pub async fn check_all_approvals(&self) -> Result<Vec<(String, bool, bool)>> {
-        use polymarkets_rs_clob_client::types::address;
-        
         const RPC_URL: &str = "https://polygon-rpc.com";
         const USDC_ADDRESS: Address = address!("0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174");
         
@@ -2165,22 +2194,22 @@ impl PolymarketApi {
     /// 
     /// Parameters:
     /// - condition_id: The condition ID of the resolved market
-    /// - token_id: The token ID of the winning token (used to determine index_set)
-    /// - outcome: "Up" or "Down" to determine the index set
+    /// - token_id: The token ID of the winning token (for logging; can be "" when redeeming by condition_id)
+    /// - outcome: "Up", "Down", or description (for logging)
+    /// - redeem_yes: Include YES (index set 1) in redemption
+    /// - redeem_no: Include NO (index set 2) in redemption. Contract only pays out winning side.
     /// 
-    /// Reference: Polymarket CTF redemption using SDK
-    /// USDC collateral address: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
-    /// 
-    /// Note: This implementation uses the SDK's CTF client if available.
-    /// The exact module path may vary - check SDK documentation.
+    /// Reference: Polymarket CTF redemption (same as Python redeem_positions).
+    /// USDC collateral: 0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174
     pub async fn redeem_tokens(
         &self,
         condition_id: &str,
         token_id: &str,
         outcome: &str,
+        redeem_yes: bool,
+        redeem_no: bool,
     ) -> Result<RedeemResponse> {
-        // Using Relayer Client for gasless transactions
-        // No need for private key signing - relayer handles it
+        // Using Relayer Client for gasless transactions (same as Python RelayClient)
         // Based on docs: https://docs.polymarket.com/developers/builders/relayer-client#redeem-positions
         
         // USDC collateral token address on Polygon
@@ -2194,14 +2223,20 @@ impl PolymarketApi {
         let condition_id_b256 = B256::from_str(condition_id_clean)
             .context(format!("Failed to parse condition_id to B256: {}", condition_id))?;
         
-        // Determine index_sets based on the documentation
-        // According to Polymarket docs: pass [1, 2] for binary markets
-        // The contract will only redeem winning tokens (only winners pay out)
-        // So even if we pass both, only the winning outcome will be redeemed
-        let index_sets = vec![U256::from(1), U256::from(2)]; // Pass both [1, 2] as per docs
+        // Index sets: YES = 1 (binary index 0), NO = 2 (binary index 1). Same as Python BINARY_YES_INDEX_SET/BINARY_NO_INDEX_SET.
+        let mut index_sets = Vec::new();
+        if redeem_yes {
+            index_sets.push(U256::from(1));
+        }
+        if redeem_no {
+            index_sets.push(U256::from(2));
+        }
+        if index_sets.is_empty() {
+            anyhow::bail!("Must redeem at least one position (YES or NO). Use redeem_yes and/or redeem_no.");
+        }
         
         eprintln!("🔄 Redeeming tokens for condition {} (outcome: {})", condition_id, outcome);
-        eprintln!("   📋 Passing index_sets: [1, 2] (contract will only redeem winning tokens)");
+        eprintln!("   📋 Index sets: {:?} (contract will only redeem winning tokens)", index_sets);
         
         // Use Relayer Client for gasless transactions. The /execute path returns 404;
         // builder-relayer-client uses POST /submit. See: Polymarket/builder-relayer-client
@@ -2240,7 +2275,7 @@ impl PolymarketApi {
         eprintln!("   - CTF Contract: {}", ctf_address);
         eprintln!("   - Collateral token (USDC): {}", collateral_token);
         eprintln!("   - Condition ID: {} ({:?})", condition_id, condition_id_b256);
-        eprintln!("   - Index sets: [1, 2] (contract will only redeem winning tokens)");
+        eprintln!("   - Index sets: {:?} (contract will only redeem winning tokens)", index_sets);
         eprintln!("   - Outcome: {}", outcome);
         
         // Encode the redeemPositions function call
@@ -2555,7 +2590,7 @@ impl PolymarketApi {
     /// Burns min(Up_balance, Down_balance) pairs and returns that much USDC via the CTF relayer.
     /// Uses the same redeemPositions(conditionId, [1,2]) flow as redeem_tokens.
     pub async fn merge_complete_sets(&self, condition_id: &str) -> Result<RedeemResponse> {
-        self.redeem_tokens(condition_id, "", "Up+Down (merge complete sets)").await
+        self.redeem_tokens(condition_id, "", "Up+Down (merge complete sets)", true, true).await
     }
 }
 

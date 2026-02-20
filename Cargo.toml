@@ -52,7 +52,7 @@ hmac = "0.12"
 sha2 = "0.10"
 hex = "0.4"
 base64 = "0.21"
-polymarkets-rs-clob-client = { version = "0.4.6", features = ["clob"] }
+clob-sdk = { version = "0.1.2", features = ["clob"] }
 alloy = { version = "1.3", features = ["full"] }
 alloy-contract = "1.3"
 chrono = { version = "0.4", features = ["serde"] }

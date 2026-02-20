@@ -5,9 +5,13 @@ use polymarket_arbitrage_bot::{PolymarketApi, Config};
 
 #[derive(Parser, Debug)]
 #[command(name = "test_redeem")]
-#[command(about = "Redeem winning tokens from your portfolio after market resolution")]
+#[command(about = "Redeem winning tokens from your portfolio after market resolution (like Python redeem.py)")]
 struct Args {
-    /// Token ID to redeem (optional - if not provided, will scan portfolio and redeem all winning tokens)
+    /// Condition ID to redeem (hex, e.g. 0x37638d6e...). Same as Python: python redeem.py <condition_id>
+    #[arg(long)]
+    condition_id: Option<String>,
+    
+    /// Token ID to redeem (optional - if not provided, will scan portfolio or use --condition-id)
     #[arg(short, long)]
     token_id: Option<String>,
     
@@ -26,6 +30,14 @@ struct Args {
     /// Redeem all winning tokens in portfolio automatically
     #[arg(long)]
     redeem_all: bool,
+    
+    /// Only redeem YES positions (index set 1). Same as Python --yes-only
+    #[arg(long)]
+    yes_only: bool,
+    
+    /// Only redeem NO positions (index set 2). Same as Python --no-only
+    #[arg(long)]
+    no_only: bool,
 }
 
 #[tokio::main]
@@ -50,12 +62,44 @@ async fn main() -> Result<()> {
         config.polymarket.signature_type,
     );
 
+    // Redeem by condition ID (same as Python: python redeem.py <condition_id> [--yes-only] [--no-only])
+    if let Some(condition_id) = &args.condition_id {
+        let redeem_yes = !args.no_only;
+        let redeem_no = !args.yes_only;
+        if !redeem_yes && !redeem_no {
+            anyhow::bail!("Must redeem at least one position. Use --yes-only, --no-only, or neither for both.");
+        }
+        println!("\n{}", "=".repeat(70));
+        println!("Redeeming positions for condition ID: {}", condition_id);
+        println!("Redeem YES: {}, Redeem NO: {}", redeem_yes, redeem_no);
+        println!("{}\n", "=".repeat(70));
+        let outcome = if redeem_yes && redeem_no {
+            "YES and NO (contract pays winning only)"
+        } else if redeem_yes {
+            "YES only"
+        } else {
+            "NO only"
+        };
+        match api.redeem_tokens(condition_id, "", outcome, redeem_yes, redeem_no).await {
+            Ok(res) => {
+                println!("✓ Redeem successful!");
+                if let Some(tx) = &res.transaction_hash {
+                    println!("Transaction hash: {}", tx);
+                }
+                if let Some(id) = res.message.as_ref() {
+                    println!("Details: {}", id);
+                }
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     // If --list, --redeem-all flag, or no token_id provided, scan portfolio
     if args.list || args.redeem_all || args.token_id.is_none() {
-        println!("🔍 Scanning your portfolio for tokens with balance...\n");
+        println!("🔍 Scanning your portfolio for tokens with balance (BTC markets only)...\n");
         
-        // Use get_portfolio_tokens_all to check recent markets (including resolved ones)
-        let tokens_result: Result<Vec<(String, f64, String, String)>, _> = api.get_portfolio_tokens_all(None, None).await;
+        let tokens_result: Result<Vec<(String, f64, String, String)>, _> = api.get_portfolio_tokens_btc_only().await;
         match tokens_result {
             Ok(tokens) => {
                 if tokens.is_empty() {
@@ -63,7 +107,8 @@ async fn main() -> Result<()> {
                     println!("\n💡 Tips:");
                     println!("   - Make sure you've bought tokens from your portfolio");
                     println!("   - The script checks the last 10 market periods (2.5 hours)");
-                    println!("   - Try buying a token manually and run this again");
+                    println!("   - Only BTC markets are checked (ETH/Solana/XRP disabled)");
+                    println!("   - Try buying a BTC token and run this again");
                     return Ok(());
                 }
                 
@@ -206,10 +251,9 @@ async fn main() -> Result<()> {
     // For manual token_id, try to find it in recent markets
     let token_id = args.token_id.as_ref().ok_or_else(|| anyhow::anyhow!("Token ID is required. Use --list to scan portfolio first."))?;
     
-    println!("🔍 Finding market for token {}...\n", &token_id[..16.min(token_id.len())]);
+    println!("🔍 Finding market for token {} (BTC markets only)...\n", &token_id[..16.min(token_id.len())]);
     
-    // Scan recent markets to find this token
-    let all_tokens = api.get_portfolio_tokens_all(None, None).await?;
+    let all_tokens = api.get_portfolio_tokens_btc_only().await?;
     match all_tokens.iter().find(|(tid, _, _, _)| tid == token_id) {
         Some((_, balance, _, condition_id)) => {
             // Determine outcome from description or check market
@@ -232,7 +276,7 @@ async fn main() -> Result<()> {
             return redeem_token(&api, token_id, condition_id, outcome, *balance).await;
         }
         None => {
-            anyhow::bail!("Token not found in portfolio. Make sure you own this token and it's from a BTC, ETH, or Solana 15-minute market.");
+            anyhow::bail!("Token not found in BTC portfolio. This script checks BTC markets only. Make sure you own this token and it's from a BTC 15-minute market.");
         }
     }
 }
@@ -349,7 +393,7 @@ async fn redeem_token(
     }
     
     // Redeem the token
-    match api.redeem_tokens(condition_id, token_id, outcome).await {
+    match api.redeem_tokens(condition_id, token_id, outcome, true, true).await {
         Ok(response) => {
             println!("✅ REDEMPTION SUCCESSFUL!");
             if let Some(msg) = &response.message {
@@ -364,5 +408,8 @@ async fn redeem_token(
             eprintln!("❌ REDEMPTION FAILED: {}", e);
             Err(e)
         }
+    }
+}
+}
     }
 }

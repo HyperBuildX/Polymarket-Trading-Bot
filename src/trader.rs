@@ -3111,6 +3111,8 @@ impl Trader {
             &trade.condition_id,
             &trade.token_id,
             outcome,
+            true,
+            true,
         ).await {
             Ok(_) => {
                 crate::log_println!("   ✅ Redemption API call successful");
