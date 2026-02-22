@@ -171,23 +171,31 @@ async function main(): Promise<void> {
   log("\n═══════════════════════════════════════════════════════════");
   log("🔐 Authenticating with Polymarket CLOB API...");
   log("═══════════════════════════════════════════════════════════");
-  if (config.polymarket.private_key) {
-    try {
-      const client = await createClobClient(config.polymarket);
-      await client.getOk();
-      log("✅ Successfully authenticated with Polymarket CLOB API");
-      log("   ✓ Private key: Valid");
-      log("   ✓ API credentials: Valid");
-      log("   ✓ Trading account: EOA (private key account)");
-    } catch (e) {
-      log("❌ Authentication failed: " + String(e));
-      if (!simulation) throw e;
-      log("   (Continuing in simulation mode with read-only market data.)");
-    }
-  } else {
-    log("⚠️ No private_key in config - only simulation/read-only will work.");
+
+  const pk = config.polymarket.private_key?.trim();
+  if (!pk) {
+    log("❌ No private_key in config. Set polymarket.private_key in config.json to run.");
+    log("   Authentication failed — bot will not start (no market discovery or trading).");
+    log("═══════════════════════════════════════════════════════════");
+    process.exit(1);
   }
-  log("✅ Authentication successful!");
+
+  try {
+    const client = await createClobClient(config.polymarket);
+    await client.getOk();
+    log("✅ Successfully authenticated with Polymarket CLOB API");
+    log("   ✓ Private key: Valid");
+    log("   ✓ API credentials: Valid");
+    log("   ✓ Trading account: EOA (private key account)");
+    log("✅ Authentication successful!");
+  } catch (e) {
+    log("❌ Authentication failed: " + String(e));
+    if (!simulation) {
+      log("═══════════════════════════════════════════════════════════");
+      process.exit(1);
+    }
+    log("   (Continuing in simulation mode with read-only market data.)");
+  }
   log("═══════════════════════════════════════════════════════════");
 
   log("🔍 Discovering BTC, ETH, Solana, XRP markets...");
