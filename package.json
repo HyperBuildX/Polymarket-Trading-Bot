@@ -7,7 +7,9 @@
   "scripts": {
     "build": "tsc",
     "start": "node --experimental-vm-modules dist/main-dual-limit-045.js",
+    "live": "node --experimental-vm-modules dist/main-dual-limit-045.js --no-simulation",
     "dev": "tsx src/main-dual-limit-045.ts",
+    "dev:live": "tsx src/main-dual-limit-045.ts --no-simulation",
     "dual-limit": "tsx src/main-dual-limit-045.ts"
   },
   "dependencies": {

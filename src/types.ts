@@ -67,6 +67,20 @@ export function tokenTypeDisplayName(t: TokenType): string {
   return map[t];
 }
 
+export function getOppositeTokenType(t: TokenType): TokenType {
+  const map: Record<TokenType, TokenType> = {
+    BtcUp: "BtcDown",
+    BtcDown: "BtcUp",
+    EthUp: "EthDown",
+    EthDown: "EthUp",
+    SolanaUp: "SolanaDown",
+    SolanaDown: "SolanaUp",
+    XrpUp: "XrpDown",
+    XrpDown: "XrpUp",
+  };
+  return map[t];
+}
+
 export interface BuyOpportunity {
   condition_id: string;
   token_id: string;

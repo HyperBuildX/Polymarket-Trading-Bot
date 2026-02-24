@@ -33,6 +33,22 @@ export class PolymarketApi {
     return this.config.proxy_wallet_address;
   }
 
+  getApiKey(): string | null {
+    return this.config.api_key ?? null;
+  }
+
+  getApiSecret(): string | null {
+    return this.config.api_secret ?? null;
+  }
+
+  getApiPassphrase(): string | null {
+    return this.config.api_passphrase ?? null;
+  }
+
+  getSignatureType(): number | null {
+    return this.config.signature_type ?? null;
+  }
+
   /** Gamma: get event by slug; returns first market from event.markets (tokens may be empty; use getMarketByConditionId for tokens) */
   async getMarketBySlug(slug: string): Promise<Market> {
     const { data } = await this.gammaClient.get<{ markets?: unknown[] }>(

@@ -2,15 +2,22 @@
 
 ## Overview
 
-This bot trades on Polymarket’s 15-minute prediction markets for **BTC**, **ETH**, **Solana**, and **XRP**. The main strategy is a **dual limit-start** approach: at the start of each 15-minute period, it places limit buy orders for both Up and Down tokens at a fixed price (default **$0.45**). Filled positions are then managed with target sells, stop-loss, and redemption at market closure.
+This bot trades on Polymarket’s **15-minute Up/Down** prediction markets for **BTC**, **ETH**, **Solana**, and **XRP**. The strategy has two parts:
 
-### Strategy Summary
+1. **Dual limit at period start** — At the start of each 15-minute period, place **limit buy** orders for both **Up** and **Down** tokens at a fixed price (e.g. **$0.45**), in a single batch.
+2. **Limit sell when one side fills** — If **exactly one side** gets filled and the **unfilled side’s best bid** crosses a trigger (default **$0.80**), place a **limit sell** at a target price (default **$0.85**) on the **filled** token. No market buys, no stop-loss.
 
-| Phase | Behavior |
-|-------|----------|
-| **Market start** | Place limit buy orders for Up and Down tokens at `dual_limit_price` (e.g. $0.45). |
-| **Position management** | Sell at target price, stop-loss if price drops, or redeem when the market closes. |
-| **Markets** | BTC always; ETH, Solana, and XRP can be enabled or disabled in config. |
+Markets are discovered by slug (e.g. `btc-updown-15m-{timestamp}`). BTC is always enabled; ETH, Solana, and XRP can be turned on or off in config.
+
+### Trading logic summary
+
+| Step | When | Action |
+|------|------|--------|
+| **1. Limit buys** | Start of each 15-minute period (or within 2s if bot started mid-period) | Place a **batch** of limit buys: Up and Down at `dual_limit_price` (e.g. $0.45), `dual_limit_shares` per side. One CLOB batch per period. |
+| **2. Market refresh** | When the period timestamp changes | Re-discover markets for the new period and re-fetch the order book snapshot. |
+| **3. Limit sell (SL)** | Every poll after 2s elapsed, once per market per period | For each market: if **one side has balance** and the **other has none**, and the **unfilled side’s best bid** ≥ `dual_limit_SL_sell_trigger_bid` (e.g. $0.80), place a **limit sell** at `dual_limit_SL_sell_at_price` (e.g. $0.85) for the **filled** token (size = filled balance). Track so we only do this once per period per market. |
+
+There is **no** hedge (no market buy on the unfilled side), **no** stop-loss, and **no** automatic redemption at market close — only the limit buys at start and the optional limit sell when the trigger is hit.
 
 **Watch the bot in action:**
 
@@ -22,49 +29,51 @@ This bot trades on Polymarket’s 15-minute prediction markets for **BTC**, **ET
 
 ```
 ┌─────────────────┐
-│  MarketMonitor  │  Polls markets, builds snapshots
+│  Monitor        │  Fetches snapshots, discovers markets by slug
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  Limit orders   │  At period start: place Up/Down limit buys at fixed price
+│  Main loop      │  Period start → batch limit buys; then check balances + trigger → limit sell
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│     Trader      │  Executes orders, manages positions, redemptions
+│  Trader         │  executeLimitBuyBatch, executeLimitSell, getBalance
 └────────┬────────┘
          │
          ▼
 ┌─────────────────┐
-│  PolymarketApi  │  CLOB/Gamma API, auth, signing
+│  CLOB / Gamma   │  Auth (API key + signature_type + proxy), orders, balance
 └─────────────────┘
 ```
 
 ## Requirements
 
 - Node.js >= 18
-- `config.json` with Polymarket `private_key` (and optional API creds)
+- `config.json` with Polymarket `private_key` and (for production) `api_key`, `api_secret`, `api_passphrase`. Use `proxy_wallet_address` and `signature_type: 2` if you use a proxy/Gnosis Safe wallet.
 
 ## Setup
 
 ```bash
 npm install
-cp config.json.example config.json   # or copy from Rust project
-# Edit config.json: set polymarket.private_key (hex, with or without 0x)
+cp config.json.example config.json   # or copy from another project
+# Edit config.json: set polymarket.private_key and API credentials
 ```
 
 ## Usage
 
-- **Simulation (default)** – no real orders, logs what would be placed:
+- **Simulation (default)** — no real orders, logs what would be placed:
   ```bash
   npm run dev
   # or
   npx tsx src/main-dual-limit-045.ts
   ```
 
-- **Production** – place real limit orders:
+- **Production (live)** — place real limit orders:
   ```bash
+  npm run live
+  # or
   npx tsx src/main-dual-limit-045.ts --no-simulation
   ```
 
@@ -75,7 +84,7 @@ cp config.json.example config.json   # or copy from Rust project
 
 ## Configuration
 
-Create or edit `config.json` in the project directory.
+Create or edit `config.json` in the project root.
 
 ### Example `config.json`
 
@@ -87,102 +96,81 @@ Create or edit `config.json` in the project directory.
     "api_key": "your_api_key",
     "api_secret": "your_api_secret",
     "api_passphrase": "your_passphrase",
-    "private_key": "0x...your_private_key_hex",
+    "private_key": "your_private_key_hex",
     "proxy_wallet_address": "0x...your_proxy_wallet",
     "signature_type": 2
   },
   "trading": {
-    "eth_condition_id": null,
-    "btc_condition_id": null,
-    "solana_condition_id": null,
-    "xrp_condition_id": null,
     "check_interval_ms": 1000,
-    "fixed_trade_amount": 4.5,
+    "enable_eth_trading": false,
+    "enable_solana_trading": false,
+    "enable_xrp_trading": false,
     "dual_limit_price": 0.45,
-    "dual_limit_shares": null,
-    "min_elapsed_minutes": 8,
-    "min_time_remaining_seconds": 30,
-    "market_closure_check_interval_seconds": 10,
-    "sell_price": 0.98,
-    "max_buy_price": 0.95,
-    "trigger_price": 0.87,
-    "stop_loss_price": 0.80,
-    "enable_eth_trading": true,
-    "enable_solana_trading": true,
-    "enable_xrp_trading": true
+    "dual_limit_shares": 5,
+    "dual_limit_SL_sell_trigger_bid": 0.2,
+    "dual_limit_SL_sell_at_price": 0.15
   }
 }
 ```
 
-### API settings
+### Polymarket (API) settings
 
 | Parameter | Description | Required |
 |-----------|-------------|----------|
 | `api_key` | Polymarket API key | Yes (production) |
 | `api_secret` | Polymarket API secret | Yes (production) |
 | `api_passphrase` | Polymarket API passphrase | Yes (production) |
-| `private_key` | Wallet private key (hex, with or without `0x`) | Yes (production) |
-| `proxy_wallet_address` | Polymarket proxy wallet address | Optional |
-| `signature_type` | `0` = EOA, `1` = Proxy, `2` = GnosisSafe | Optional (default: 0) |
+| `private_key` | Wallet private key (hex, with or without `0x`) | Yes |
+| `proxy_wallet_address` | Polymarket proxy wallet address | For proxy/Gnosis Safe |
+| `signature_type` | `0` = EOA, `1` = Proxy, `2` = Gnosis Safe | Use `2` for proxy wallet |
 
 ### Trading settings
 
 | Parameter | Description | Default |
 |-----------|-------------|---------|
-| `dual_limit_price` | Limit buy price for Up/Down at market start | 0.45 |
-| `dual_limit_shares` | Fixed shares per limit order; if unset, uses `fixed_trade_amount / price` | null |
-| `fixed_trade_amount` | USD size when shares not fixed by `dual_limit_shares` | 4.5 |
-| `sell_price` | Target sell price | 0.98 |
-| `stop_loss_price` | Stop-loss sell price | 0.80 |
-| `check_interval_ms` | Market polling interval (ms) | 1000 |
-| `enable_eth_trading` | Enable ETH 15m markets | true |
-| `enable_solana_trading` | Enable Solana 15m markets | false |
-| `enable_xrp_trading` | Enable XRP 15m markets | false |
+| `check_interval_ms` | Poll interval (ms) for market snapshot | 1000 |
+| `dual_limit_price` | Limit buy price for Up/Down at period start | 0.45 |
+| `dual_limit_shares` | Shares per limit order (each side) | 1 |
+| `dual_limit_SL_sell_trigger_bid` | When one side filled: place limit sell on filled token only if unfilled side’s best bid ≥ this | 0.8 |
+| `dual_limit_SL_sell_at_price` | Limit sell price for the filled token when trigger is hit | 0.85 |
+| `enable_eth_trading` | Enable ETH 15m Up/Down market | false |
+| `enable_solana_trading` | Enable Solana 15m Up/Down market | false |
+| `enable_xrp_trading` | Enable XRP 15m Up/Down market | false |
 
 ### Market discovery
 
-The bot discovers 15-minute markets by slug (e.g. `btc-updown-15m-{timestamp}`). You can pin markets by setting condition IDs:
-
-```json
-{
-  "trading": {
-    "btc_condition_id": "0x...",
-    "eth_condition_id": "0x...",
-    "solana_condition_id": "0x...",
-    "xrp_condition_id": "0x..."
-  }
-}
-```
+Markets are discovered by slug (e.g. `btc-updown-15m-{period_timestamp}`). When the 15-minute period changes, the bot refreshes markets for the new period. No condition IDs need to be set in config.
 
 ---
 
 ## Features
 
-- **Automatic market discovery** — Finds 15-minute Up/Down markets for BTC, ETH, Solana, XRP; handles period rollover.
-- **Dual limit at period start** — Places limit buys for both outcomes at a configurable price (e.g. $0.45).
-- **Position management** — Target sell, stop-loss, and redemption at market close.
-- **Configurable markets** — Enable/disable ETH, Solana, XRP; optional fixed condition IDs.
-- **Simulation mode** — Test logic and PnL without sending orders.
-- **Structured logging** — Console and file logging for debugging and audit.
-
+- **Automatic market discovery** — Finds 15-minute Up/Down markets for BTC, ETH, Solana, XRP; refreshes on period rollover.
+- **Dual limit at period start** — Single batch of limit buys for Up and Down at a configurable price and shares.
+- **Limit sell on trigger** — When exactly one side is filled and the unfilled side’s bid crosses the trigger, place a limit sell at a target price on the filled token (once per market per period).
+- **Configurable markets** — BTC always on; enable/disable ETH, Solana, XRP.
+- **Simulation mode** — Run without sending orders.
+- **Structured logging** — Stderr logging for monitoring and debugging.
 
 ## Build
 
 ```bash
 npm run build
 node dist/main-dual-limit-045.js
+# or with flags:
+node dist/main-dual-limit-045.js --no-simulation -c config.json
 ```
 
 ## Security
 
 - Do **not** commit `config.json` with real keys or secrets.
-- Prefer simulation and small sizes when testing.
-- Monitor logs and balances when running in production.
+- Use simulation and small sizes when testing.
+- Monitor logs and balances in production.
 
 ---
 
 ## Support
 
-If you have any questions or would like a more customized app for specific use cases, please feel free to contact us at the contact information below.
+For questions or customizations:
 - E-Mail: admin@hyperbuildx.com
 - Telegram: [@bettyjk_0915](https://t.me/bettyjk_0915)

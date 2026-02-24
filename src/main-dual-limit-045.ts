@@ -5,13 +5,20 @@
  */
 import { loadConfig, parseArgs } from "./config.js";
 import { PolymarketApi } from "./api.js";
-import { createClobClient } from "./clob.js";
+import { createClobClient, type ClobClient } from "./clob.js";
 import { Trader } from "./trader.js";
 import { fetchSnapshot, formatPrices, currentPeriodTimestamp } from "./monitor.js";
 import type { Market, MarketSnapshot, BuyOpportunity, TokenType } from "./types.js";
+import { tokenTypeDisplayName } from "./types.js";
 
 const LIMIT_PRICE = 0.45;
 const PERIOD_DURATION = 900;
+const DEFAULT_SELL_TRIGGER_BID = 0.8;
+const DEFAULT_SELL_AT_PRICE = 0.85;
+const LIMIT_SELL_MAX_RETRIES = 5;
+const LIMIT_SELL_RETRY_DELAY_MS = 3000;
+/** Skip limit sell if filled position is below this (avoids CLOB min size rejections). */
+const MIN_LIMIT_SELL_SHARES = 0.01;
 
 function log(msg: string): void {
   process.stderr.write(msg + "\n");
@@ -151,6 +158,36 @@ function buildOpportunities(
   return opps;
 }
 
+/** Get current ask price for a token from snapshot. */
+function getAskForToken(snapshot: MarketSnapshot, tokenId: string): number | null {
+  const markets = [
+    snapshot.btc_market,
+    snapshot.eth_market,
+    snapshot.solana_market,
+    snapshot.xrp_market,
+  ];
+  for (const m of markets) {
+    if (m.up_token?.token_id === tokenId) return m.up_token.ask;
+    if (m.down_token?.token_id === tokenId) return m.down_token.ask;
+  }
+  return null;
+}
+
+/** Get current bid price for a token from snapshot. */
+function getBidForToken(snapshot: MarketSnapshot, tokenId: string): number | null {
+  const markets = [
+    snapshot.btc_market,
+    snapshot.eth_market,
+    snapshot.solana_market,
+    snapshot.xrp_market,
+  ];
+  for (const m of markets) {
+    if (m.up_token?.token_id === tokenId) return m.up_token.bid;
+    if (m.down_token?.token_id === tokenId) return m.down_token.bid;
+  }
+  return null;
+}
+
 async function main(): Promise<void> {
   const { simulation, config: configPath } = parseArgs();
   const config = loadConfig(configPath);
@@ -158,14 +195,19 @@ async function main(): Promise<void> {
   log("🚀 Starting Polymarket Dual Limit-Start Bot (TypeScript)");
   log("Mode: " + (simulation ? "SIMULATION" : "PRODUCTION"));
   const limitPrice = config.trading.dual_limit_price ?? LIMIT_PRICE;
-  const limitShares = config.trading.dual_limit_shares ?? null;
+  const limitShares = config.trading.dual_limit_shares ?? 1;
   log(`Strategy: At market start, place limit buys for BTC, ETH, SOL, XRP Up/Down at $${limitPrice.toFixed(2)}`);
-  log(limitShares != null ? `Shares per order (config): ${limitShares}` : "Shares per order: fixed_trade_amount / price");
+  log(`Shares per order: ${limitShares}`);
   const extras: string[] = [];
   if (config.trading.enable_eth_trading) extras.push("ETH");
   if (config.trading.enable_solana_trading) extras.push("Solana");
   if (config.trading.enable_xrp_trading) extras.push("XRP");
   log("✅ Trading enabled for BTC and " + (extras.length ? extras.join(", ") : "no additional") + " 15-minute markets");
+  const sellTrigger = config.trading.dual_limit_SL_sell_trigger_bid ?? DEFAULT_SELL_TRIGGER_BID;
+  const sellPrice = config.trading.dual_limit_SL_sell_at_price ?? DEFAULT_SELL_AT_PRICE;
+  const slThreshold = 1 - sellTrigger;
+  const slEnabledStartup = config.trading.dual_limit_SL_enabled !== false;
+  log(`Limit sell (hedge): ${slEnabledStartup ? "enabled" : "disabled"}. When enabled: one side filled and unfilled ask/bid >= $${slThreshold.toFixed(2)} → cancel unfilled limit buy, place limit sell at $${sellPrice.toFixed(2)}`);
 
   const api = new PolymarketApi(config.polymarket);
   log("\n═══════════════════════════════════════════════════════════");
@@ -180,9 +222,11 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  let clobClient: ClobClient | null = null;
   try {
     const client = await createClobClient(config.polymarket);
     await client.getOk();
+    clobClient = client;
     log("✅ Successfully authenticated with Polymarket CLOB API");
     log("   ✓ Private key: Valid");
     log("   ✓ API credentials: Valid");
@@ -206,7 +250,7 @@ async function main(): Promise<void> {
     config.trading.enable_xrp_trading
   );
 
-  const trader = new Trader(api, config.trading, simulation);
+  const trader = new Trader(api, config.trading, simulation, clobClient);
   let ethMarket = eth;
   let btcMarket = btc;
   let solanaMarket = solana;
@@ -215,6 +259,9 @@ async function main(): Promise<void> {
   let lastPlacedPeriod: number | null = null;
   let lastSeenPeriod: number | null = null;
   const checkIntervalMs = config.trading.check_interval_ms ?? 1000;
+  const sellTriggerBid = config.trading.dual_limit_SL_sell_trigger_bid ?? DEFAULT_SELL_TRIGGER_BID;
+  const sellAtPrice = config.trading.dual_limit_SL_sell_at_price ?? DEFAULT_SELL_AT_PRICE;
+  const limitSellPlacedForPeriod = new Set<string>(); // key: `${period}_${conditionId}`
 
   log("Starting market monitoring...");
   const now = Math.floor(Date.now() / 1000);
@@ -233,7 +280,7 @@ async function main(): Promise<void> {
   }
 
   for (;;) {
-    const snapshot = await fetchSnapshot(api, ethMarket, btcMarket, solanaMarket, xrpMarket);
+    let snapshot = await fetchSnapshot(api, ethMarket, btcMarket, solanaMarket, xrpMarket);
     log("📊 " + formatPrices(snapshot));
 
     if (snapshot.time_remaining_seconds === 0) {
@@ -248,39 +295,173 @@ async function main(): Promise<void> {
     }
     if (lastSeenPeriod !== snapshot.period_timestamp) {
       lastSeenPeriod = snapshot.period_timestamp;
+      limitSellPlacedForPeriod.clear();
+      log("🔄 Period changed - refreshing markets for new period...");
+      try {
+        const markets = await getOrDiscoverMarkets(
+          api,
+          config.trading.enable_eth_trading,
+          config.trading.enable_solana_trading,
+          config.trading.enable_xrp_trading
+        );
+        ethMarket = markets.eth;
+        btcMarket = markets.btc;
+        solanaMarket = markets.solana;
+        xrpMarket = markets.xrp;
+        log("✅ Markets refreshed");
+      } catch (e) {
+        log("⚠️ Failed to refresh markets: " + String(e) + " - using previous markets");
+      }
+      // Re-fetch snapshot with new markets so we have correct token IDs for the new period
+      snapshot = await fetchSnapshot(api, ethMarket, btcMarket, solanaMarket, xrpMarket);
+      log("📊 " + formatPrices(snapshot));
+      // Place batch ASAP after detecting new market (one request for all limit orders)
+      if (lastPlacedPeriod !== snapshot.period_timestamp) {
+        lastPlacedPeriod = snapshot.period_timestamp;
+        const opportunities = buildOpportunities(
+          snapshot,
+          limitPrice,
+          config.trading.enable_eth_trading,
+          config.trading.enable_solana_trading,
+          config.trading.enable_xrp_trading
+        );
+        if (opportunities.length > 0) {
+          log(`🎯 New market detected - placing ${opportunities.length} limit buy(s) at $${limitPrice.toFixed(2)} (batch ASAP)`);
+          try {
+            await trader.executeLimitBuyBatch(opportunities, limitPrice, limitShares);
+          } catch (e) {
+            log("Error executing limit buy batch: " + String(e));
+          }
+        }
+      }
+      await new Promise((r) => setTimeout(r, checkIntervalMs));
+      continue;
     }
 
     const timeElapsed = PERIOD_DURATION - snapshot.time_remaining_seconds;
-    if (timeElapsed > 2) {
-      await new Promise((r) => setTimeout(r, checkIntervalMs));
-      continue;
+
+    // Fallback: place in first 2 seconds if we haven't yet (e.g. bot started mid-period)
+    if (timeElapsed <= 2 && lastPlacedPeriod !== snapshot.period_timestamp) {
+      lastPlacedPeriod = snapshot.period_timestamp;
+      const opportunities = buildOpportunities(
+        snapshot,
+        limitPrice,
+        config.trading.enable_eth_trading,
+        config.trading.enable_solana_trading,
+        config.trading.enable_xrp_trading
+      );
+      if (opportunities.length > 0) {
+        log(`🎯 Market start - placing ${opportunities.length} limit buy(s) at $${limitPrice.toFixed(2)} (batch)`);
+        try {
+          await trader.executeLimitBuyBatch(opportunities, limitPrice, limitShares);
+        } catch (e) {
+          log("Error executing limit buy batch: " + String(e));
+        }
+      }
     }
 
-    if (lastPlacedPeriod === snapshot.period_timestamp) {
-      await new Promise((r) => setTimeout(r, checkIntervalMs));
-      continue;
-    }
-    lastPlacedPeriod = snapshot.period_timestamp;
+    // Hedge / stop-loss: one side filled, one unfilled. When unfilled ask >= (1 - trigger) → limit sell BOUGHT token, cancel unfilled limit buy.
+    const slEnabled = config.trading.dual_limit_SL_enabled !== false;
+    if (slEnabled && !simulation && clobClient && timeElapsed > 2) {
+      const markets: Array<{
+        name: string;
+        conditionId: string;
+        upTokenId: string | null;
+        downTokenId: string | null;
+        upType: TokenType;
+        downType: TokenType;
+      }> = [];
+      if (snapshot.btc_market.up_token && snapshot.btc_market.down_token) {
+        markets.push({
+          name: "BTC",
+          conditionId: snapshot.btc_market.condition_id,
+          upTokenId: snapshot.btc_market.up_token.token_id,
+          downTokenId: snapshot.btc_market.down_token.token_id,
+          upType: "BtcUp",
+          downType: "BtcDown",
+        });
+      }
+      if (config.trading.enable_eth_trading && snapshot.eth_market.up_token && snapshot.eth_market.down_token) {
+        markets.push({
+          name: "ETH",
+          conditionId: snapshot.eth_market.condition_id,
+          upTokenId: snapshot.eth_market.up_token.token_id,
+          downTokenId: snapshot.eth_market.down_token.token_id,
+          upType: "EthUp",
+          downType: "EthDown",
+        });
+      }
+      if (config.trading.enable_solana_trading && snapshot.solana_market.up_token && snapshot.solana_market.down_token) {
+        markets.push({
+          name: "SOL",
+          conditionId: snapshot.solana_market.condition_id,
+          upTokenId: snapshot.solana_market.up_token.token_id,
+          downTokenId: snapshot.solana_market.down_token.token_id,
+          upType: "SolanaUp",
+          downType: "SolanaDown",
+        });
+      }
+      if (config.trading.enable_xrp_trading && snapshot.xrp_market.up_token && snapshot.xrp_market.down_token) {
+        markets.push({
+          name: "XRP",
+          conditionId: snapshot.xrp_market.condition_id,
+          upTokenId: snapshot.xrp_market.up_token.token_id,
+          downTokenId: snapshot.xrp_market.down_token.token_id,
+          upType: "XrpUp",
+          downType: "XrpDown",
+        });
+      }
+      for (const m of markets) {
+        if (!m.upTokenId || !m.downTokenId) continue;
+        const key = `${snapshot.period_timestamp}_${m.conditionId}`;
+        if (limitSellPlacedForPeriod.has(key)) continue;
 
-    const opportunities = buildOpportunities(
-      snapshot,
-      limitPrice,
-      config.trading.enable_eth_trading,
-      config.trading.enable_solana_trading,
-      config.trading.enable_xrp_trading
-    );
-    if (opportunities.length === 0) {
-      await new Promise((r) => setTimeout(r, checkIntervalMs));
-      continue;
-    }
+        const upBal = await trader.getBalance(m.upTokenId);
+        const downBal = await trader.getBalance(m.downTokenId);
+        const upFilled = upBal > 0.001;
+        const downFilled = downBal > 0.001;
+        if (upFilled === downFilled) continue;
 
-    log(`🎯 Market start detected - placing limit buys at $${limitPrice.toFixed(2)}`);
-    for (const opp of opportunities) {
-      if (trader.hasActivePosition(opp.period_timestamp, opp.token_type)) continue;
-      try {
-        await trader.executeLimitBuy(opp, limitPrice, limitShares);
-      } catch (e) {
-        log("Error executing limit buy: " + String(e));
+        const unfilledTokenId = upFilled ? m.downTokenId : m.upTokenId;
+        const unfilledAsk = getAskForToken(snapshot, unfilledTokenId);
+        const unfilledBid = getBidForToken(snapshot, unfilledTokenId);
+        const slTriggerThreshold = 1 - sellTriggerBid;
+        const unfilledPriceForTrigger = unfilledAsk ?? unfilledBid ?? 0;
+        if (unfilledPriceForTrigger < slTriggerThreshold) continue;
+
+        // Sell the BOUGHT (filled) token only — limit sell at sellAtPrice when unfilled ask >= (1 - trigger)
+        const filledTokenId = upFilled ? m.upTokenId : m.downTokenId;
+        const filledType = upFilled ? m.upType : m.downType;
+        const filledUnitsRaw = upFilled ? upBal : downBal;
+        const filledUnits = Math.round(filledUnitsRaw * 1e6) / 1e6;
+        if (filledUnits < MIN_LIMIT_SELL_SHARES) {
+          log(`   ${m.name}: filled size ${filledUnits.toFixed(6)} < min ${MIN_LIMIT_SELL_SHARES}, skip limit sell\n`);
+          continue;
+        }
+        log(`📤 SL trigger (${m.name}): unfilled price $${unfilledPriceForTrigger.toFixed(2)} >= $${slTriggerThreshold.toFixed(2)} (ask=${unfilledAsk != null ? unfilledAsk.toFixed(2) : "N/A"} bid=${unfilledBid != null ? unfilledBid.toFixed(2) : "N/A"}) → close unfilled limit buy, then sell BOUGHT ${tokenTypeDisplayName(filledType)} ${filledUnits.toFixed(6)} @ $${sellAtPrice.toFixed(2)}\n`);
+        try {
+          await trader.cancelPendingLimitBuy(snapshot.period_timestamp, unfilledTokenId);
+        } catch (cancelErr) {
+          log(`   ⚠️ Could not cancel unfilled limit buy: ${String(cancelErr)}\n`);
+        }
+        let limitSellOk = false;
+        for (let attempt = 1; attempt <= LIMIT_SELL_MAX_RETRIES; attempt++) {
+          try {
+            await trader.executeLimitSell(filledTokenId, filledType, sellAtPrice, filledUnits);
+            limitSellPlacedForPeriod.add(key);
+            limitSellOk = true;
+            break;
+          } catch (e) {
+            log(`   Limit sell attempt ${attempt}/${LIMIT_SELL_MAX_RETRIES} failed: ${String(e)}\n`);
+            if (attempt < LIMIT_SELL_MAX_RETRIES) {
+              log(`   Retrying in ${LIMIT_SELL_RETRY_DELAY_MS / 1000}s...\n`);
+              await new Promise((r) => setTimeout(r, LIMIT_SELL_RETRY_DELAY_MS));
+            }
+          }
+        }
+        if (!limitSellOk) {
+          log(`   ⚠️ Limit sell failed after ${LIMIT_SELL_MAX_RETRIES} attempts; will retry next poll\n`);
+        }
       }
     }
 
