@@ -1,23 +1,15 @@
-# Polymarket Trading Bot (TypeScript)
+# Polymarket Trading Bot
 
-## Overview
+A Rust trading bot for [Polymarket](https://polymarket.com) that trades 15-minute (and 5-minute) price prediction markets using limit orders and trailing strategies.
 
-This bot trades on Polymarket’s **15-minute Up/Down** prediction markets for **BTC**, **ETH**, **Solana**, and **XRP**. The strategy has two parts:
+**Features:**
+- **Dual Limit Same-Size (0.45)** — Place Up/Down limit buys at $0.45 at market start; hedge with market buy if only one fills (2-min / 4-min / early / standard).
+- **Dual Limit 5-Minute BTC** — Same idea for BTC 5-minute markets with time-based bands and trailing stop.
+- **Trailing Bot** — Wait for price &lt; 0.45, then trail with stop loss and trailing stop on the opposite side.
+- **Backtest** — Replay strategy on historical price data in `history/`.
+- **Test binaries** — Limit order, redeem, merge, allowance, sell, and prediction tests.
 
-1. **Dual limit at period start** — At the start of each 15-minute period, place **limit buy** orders for both **Up** and **Down** tokens at a fixed price (e.g. **$0.45**), in a single batch.
-2. **Limit sell when one side fills** — If **exactly one side** gets filled and the **unfilled side’s best bid** crosses a trigger (default **$0.80**), place a **limit sell** at a target price (default **$0.85**) on the **filled** token. No market buys, no stop-loss.
-
-Markets are discovered by slug (e.g. `btc-updown-15m-{timestamp}`). BTC is always enabled; ETH, Solana, and XRP can be turned on or off in config.
-
-### Trading logic summary
-
-| Step | When | Action |
-|------|------|--------|
-| **1. Limit buys** | Start of each 15-minute period (or within 2s if bot started mid-period) | Place a **batch** of limit buys: Up and Down at `dual_limit_price` (e.g. $0.45), `dual_limit_shares` per side. One CLOB batch per period. |
-| **2. Market refresh** | When the period timestamp changes | Re-discover markets for the new period and re-fetch the order book snapshot. |
-| **3. Limit sell (SL)** | Every poll after 2s elapsed, once per market per period | For each market: if **one side has balance** and the **other has none**, and the **unfilled side’s best bid** ≥ `dual_limit_SL_sell_trigger_bid` (e.g. $0.80), place a **limit sell** at `dual_limit_SL_sell_at_price` (e.g. $0.85) for the **filled** token (size = filled balance). Track so we only do this once per period per market. |
-
-There is **no** hedge (no market buy on the unfilled side), **no** stop-loss, and **no** automatic redemption at market close — only the limit buys at start and the optional limit sell when the trigger is hit.
+---
 
 **Watch the bot in action:**
 
@@ -25,152 +17,139 @@ There is **no** hedge (no market buy on the unfilled side), **no** stop-loss, an
 
 ---
 
-## Architecture
+## Quick reference
 
-```
-┌─────────────────┐
-│  Monitor        │  Fetches snapshots, discovers markets by slug
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Main loop      │  Period start → batch limit buys; then check balances + trigger → limit sell
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  Trader         │  executeLimitBuyBatch, executeLimitSell, getBalance
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  CLOB / Gamma   │  Auth (API key + signature_type + proxy), orders, balance
-└─────────────────┘
-```
-
-## Requirements
-
-- Node.js >= 18
-- `config.json` with Polymarket `private_key` and (for production) `api_key`, `api_secret`, `api_passphrase`. Use `proxy_wallet_address` and `signature_type: 2` if you use a proxy/Gnosis Safe wallet.
-
-## Setup
-
-```bash
-npm install
-cp config.json.example config.json   # or copy from another project
-# Edit config.json: set polymarket.private_key and API credentials
-```
-
-## Usage
-
-- **Simulation (default)** — no real orders, logs what would be placed:
-  ```bash
-  npm run dev
-  # or
-  npx tsx src/main-dual-limit-045.ts
-  ```
-
-- **Production (live)** — place real limit orders:
-  ```bash
-  npm run live
-  # or
-  npx tsx src/main-dual-limit-045.ts --no-simulation
-  ```
-
-- **Config path**:
-  ```bash
-  npx tsx src/main-dual-limit-045.ts -c /path/to/config.json
-  ```
-
-## Configuration
-
-Create or edit `config.json` in the project root.
-
-### Example `config.json`
-
-```json
-{
-  "polymarket": {
-    "gamma_api_url": "https://gamma-api.polymarket.com",
-    "clob_api_url": "https://clob.polymarket.com",
-    "api_key": "your_api_key",
-    "api_secret": "your_api_secret",
-    "api_passphrase": "your_passphrase",
-    "private_key": "your_private_key_hex",
-    "proxy_wallet_address": "0x...your_proxy_wallet",
-    "signature_type": 2
-  },
-  "trading": {
-    "check_interval_ms": 1000,
-    "enable_eth_trading": false,
-    "enable_solana_trading": false,
-    "enable_xrp_trading": false,
-    "dual_limit_price": 0.45,
-    "dual_limit_shares": 5,
-    "dual_limit_SL_sell_trigger_bid": 0.2,
-    "dual_limit_SL_sell_at_price": 0.15
-  }
-}
-```
-
-### Polymarket (API) settings
-
-| Parameter | Description | Required |
-|-----------|-------------|----------|
-| `api_key` | Polymarket API key | Yes (production) |
-| `api_secret` | Polymarket API secret | Yes (production) |
-| `api_passphrase` | Polymarket API passphrase | Yes (production) |
-| `private_key` | Wallet private key (hex, with or without `0x`) | Yes |
-| `proxy_wallet_address` | Polymarket proxy wallet address | For proxy/Gnosis Safe |
-| `signature_type` | `0` = EOA, `1` = Proxy, `2` = Gnosis Safe | Use `2` for proxy wallet |
-
-### Trading settings
-
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `check_interval_ms` | Poll interval (ms) for market snapshot | 1000 |
-| `dual_limit_price` | Limit buy price for Up/Down at period start | 0.45 |
-| `dual_limit_shares` | Shares per limit order (each side) | 1 |
-| `dual_limit_SL_sell_trigger_bid` | When one side filled: place limit sell on filled token only if unfilled side’s best bid ≥ this | 0.8 |
-| `dual_limit_SL_sell_at_price` | Limit sell price for the filled token when trigger is hit | 0.85 |
-| `enable_eth_trading` | Enable ETH 15m Up/Down market | false |
-| `enable_solana_trading` | Enable Solana 15m Up/Down market | false |
-| `enable_xrp_trading` | Enable XRP 15m Up/Down market | false |
-
-### Market discovery
-
-Markets are discovered by slug (e.g. `btc-updown-15m-{period_timestamp}`). When the 15-minute period changes, the bot refreshes markets for the new period. No condition IDs need to be set in config.
+| Binary | Description |
+|--------|-------------|
+| `main_dual_limit_045_same_size` | Dual limit 0.45, same-size hedge (default) |
+| `main_dual_limit_045_5m_btc` | Dual limit 0.45, BTC 5-minute only |
+| `main_trailing` | Trailing stop bot |
+| `backtest` | Backtest on history files |
+| `test_*` | test_limit_order, test_redeem, test_merge, test_allowance, test_sell, test_predict_fun |
 
 ---
 
-## Features
+## Setup
 
-- **Automatic market discovery** — Finds 15-minute Up/Down markets for BTC, ETH, Solana, XRP; refreshes on period rollover.
-- **Dual limit at period start** — Single batch of limit buys for Up and Down at a configurable price and shares.
-- **Limit sell on trigger** — When exactly one side is filled and the unfilled side’s bid crosses the trigger, place a limit sell at a target price on the filled token (once per market per period).
-- **Configurable markets** — BTC always on; enable/disable ETH, Solana, XRP.
-- **Simulation mode** — Run without sending orders.
-- **Structured logging** — Stderr logging for monitoring and debugging.
+1. **Install Rust** (if needed):
+   ```bash
+   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+   ```
 
-## Build
+2. **Build:**
+   ```bash
+   cargo build --release
+   ```
+
+3. **Configure:** Copy `config.example.json` to `config.json` and set:
+   - `polymarket`: `api_key`, `api_secret`, `api_passphrase`, `private_key`
+   - Optional: `proxy_wallet_address`, `signature_type` (1 = POLY_PROXY, 2 = GNOSIS_SAFE)
+   - `trading`: enable flags, `dual_limit_price`, `dual_limit_shares`, hedge/trailing params, etc.
+
+---
+
+## Bot versions
+
+### 1. Dual Limit Same-Size Bot (0.45) — default
+
+**Binary:** `main_dual_limit_045_same_size`
+
+At market start (first ~5 s), places limit buys for BTC and enabled ETH/SOL/XRP Up/Down at $0.45. If **both** fill → done for that market. If **only one** fills, applies a **2-min / 4-min / early / standard** hedge: buy the unfilled side at market (same size), cancel the unfilled $0.45 limit.
+
+**Low-price exit (0.05 / 0.99 or 0.02 / 0.99):** Two limit sells (cheap at $0.05 or $0.02, opposite at $0.99) are placed only when:
+1. At least **10 minutes** have elapsed.
+2. The market was hedged via **4-min, early, or standard** (not 2-min).
+3. One side’s **bid** is below 0.10 (or below 0.03 for the 0.02/0.99 path when hedge price &lt; 0.60).
 
 ```bash
-npm run build
-node dist/main-dual-limit-045.js
-# or with flags:
-node dist/main-dual-limit-045.js --no-simulation -c config.json
+# Simulation
+cargo run --bin main_dual_limit_045_same_size -- --simulation
+
+# Production (default binary)
+cargo run -- --no-simulation
 ```
+
+### 2. Dual Limit 5-Minute BTC Bot
+
+**Binary:** `main_dual_limit_045_5m_btc`
+
+Dual limit at $0.45 for **BTC 5-minute markets only**. Two windows: **2-min** (2–3 min), **3-min** (≥3 min), with bands and trailing stop (e.g. buy when ask ≥ lowest_ask + 0.03).
+
+```bash
+cargo run --bin main_dual_limit_045_5m_btc -- --config config.json --simulation
+cargo run --bin main_dual_limit_045_5m_btc -- --config config.json --no-simulation
+```
+
+### 3. Trailing Bot
+
+**Binary:** `main_trailing`
+
+Waits until one token’s price is **under 0.45**, then trails that token (trailing stop with 0.45 cap). After the first buy, uses **stop loss + trailing stop** for the opposite token.
+
+```bash
+cargo run --bin main_trailing -- --simulation
+cargo run --bin main_trailing -- --no-simulation
+```
+
+### 4. Backtest
+
+**Binary:** `backtest`
+
+Replays the dual-limit strategy on `history/market_*_prices.toml`: limit buys at $0.45, simulated fills, hedge logic, PnL. Requires existing price history files.
+
+```bash
+cargo run --bin backtest -- --backtest
+```
+
+---
+
+## Test binaries
+
+| Binary | Purpose |
+|--------|---------|
+| `test_limit_order` | Place a limit order (e.g. `--price-cents 60 --shares 10`) |
+| `test_redeem` | List/redeem winning tokens (`--list`, `--redeem-all`) |
+| `test_merge` | Merge complete sets to USDC (`--merge`) |
+| `test_allowance` | Check balance/allowance; set approval (`--approve-only`, `--list`) |
+| `test_sell` | Test market sell |
+| `test_predict_fun` | Test prediction/price logic |
+
+Example:
+```bash
+cargo run --bin test_allowance -- --approve-only   # One-time approval for selling
+cargo run --bin test_redeem -- --list
+```
+
+---
+
+## Configuration
+
+- **`--simulation`** / **`--no-simulation`** — No real orders in simulation.
+- **`--config <path>`** — Config file (default: `config.json`).
+
+**Config fields (summary):**
+- **polymarket:** `gamma_api_url`, `clob_api_url`, `api_key`, `api_secret`, `api_passphrase`, `private_key`, optional `proxy_wallet_address`, `signature_type`.
+- **trading:** `check_interval_ms`, `fixed_trade_amount`, `enable_btc_trading` / `enable_eth_trading` / etc., `dual_limit_price` (0.45), `dual_limit_shares`, `dual_limit_hedge_*`, `trailing_stop_point`, `trailing_shares`, etc.
+
+---
+
+## Notes
+
+- Bots run until you stop them (Ctrl+C).
+- Simulation mode logs trades but does not send orders.
+- **Before selling**, set on-chain approval once per proxy wallet:  
+  `cargo run --bin test_allowance -- --approve-only`
+
+---
 
 ## Security
 
 - Do **not** commit `config.json` with real keys or secrets.
-- Use simulation and small sizes when testing.
-- Monitor logs and balances in production.
-
----
+- Prefer simulation and small sizes when testing.
+- Monitor logs and balances when running in production.
 
 ## Support
 
-For questions or customizations:
+If you have any questions or would like a more customized app for specific use cases, please feel free to contact us at the contact information below.
 - E-Mail: admin@hyperbuildx.com
 - Telegram: [@bettyjk_0915](https://t.me/bettyjk_0915)

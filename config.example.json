@@ -1,0 +1,32 @@
+{
+  "polymarket": {
+    "gamma_api_url": "https://gamma-api.polymarket.com",
+    "clob_api_url": "https://clob.polymarket.com",
+    "api_key": "",
+    "api_secret": "",
+    "api_passphrase": "",
+    "private_key": "",
+    "proxy_wallet_address": "",
+    "signature_type": 2
+  },
+  "trading": {
+    "check_interval_ms": 500,
+    "fixed_trade_amount": 4.5,
+    "enable_eth_trading": false,
+    "enable_solana_trading": false,
+    "enable_btc_trading": true,
+    "enable_xrp_trading": false,
+    "dual_limit_price": 0.45,
+    "dual_limit_shares": 10.0,
+    "dual_limit_hedge_after_minutes": 10,
+    "dual_limit_hedge_price": 0.85,
+    "dual_limit_early_hedge_minutes": 6,
+    "dual_limit_trend_strength_threshold": 0.3,
+    "dual_limit_trend_price_buffer": 0.05,
+    "dual_limit_trend_history_size": 60,
+    "dual_limit_hedge_trailing_stop": 0.03,
+    "trailing_stop_point": 0.02,
+    "trailing_shares": 6,
+    "dual_limit_trailing_buy_mode": false
+  }
+}
